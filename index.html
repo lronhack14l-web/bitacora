@@ -1562,6 +1562,7 @@ const APARIENCIA = ['theme', 'efectos', 'hideBalances'];
 let dispositivo = { url:'', clave:'', aparienciaPropia:false, apariencia:null, desde:null };
 let sincro = { base:null, version:null, versionConfig:null, pendiente:false, ultima:null };
 let sincronizando = false, sincroOtraVez = false, contadorCambios = 0, temporizadorSincro = null;
+let sinRed = false; // se decide por el resultado real de la conexión, no por lo que dice el navegador
 let errorSincro = '', eliminacionAutorizada = false, ultimaRevision = 0, enlacePendiente = null;
 function vinculado(){ return !!(dispositivo.url && dispositivo.clave); }
 function copiar(x){ return JSON.parse(JSON.stringify(x)); }
@@ -1569,7 +1570,7 @@ function elegir(obj, claves){ const o = {}; claves.forEach(k => { if (obj && k i
 function estadoReposo(){
   if (!vinculado()) return 'ok';
   if (sincronizando) return 'sincronizando';
-  if (!navigator.onLine) return 'sinconexion';
+  if (sinRed) return 'sinconexion';
   if (errorSincro === 'conflicto') return 'conflicto';
   if (errorSincro) return 'error';
   if (sincro.pendiente) return 'pendiente';
@@ -1647,10 +1648,11 @@ async function llamarAPI(accion, extra, conf){
     // Se envía como texto simple: así Google responde sin bloqueos entre sitios
     r = await fetch(conf.url, { method:'POST', body:JSON.stringify(Object.assign({ accion, clave:conf.clave }, extra || {})), signal:ctrl.signal, redirect:'follow', cache:'no-store' });
   } catch (e){
-    const err = new Error(!navigator.onLine ? 'No hay conexión a internet. Tus cambios quedan guardados en este dispositivo.' : (e.name === 'AbortError' ? 'La planilla tardó demasiado en responder.' : 'No se pudo conectar con la planilla. Revisá la dirección y que la implementación tenga acceso "Cualquier usuario".'));
-    err.tipo = !navigator.onLine ? 'sinconexion' : 'red'; throw err;
+    const err = new Error(e.name === 'AbortError' ? 'La planilla tardó demasiado en responder.' : 'No se pudo llegar a tu planilla. Revisá tu conexión a internet y que la dirección sea la de la implementación nueva, con acceso "Cualquier usuario".');
+    err.tipo = 'red'; throw err;
   } finally { clearTimeout(reloj); }
   const txt = await r.text();
+  sinRed = false;
   let j;
   try { j = JSON.parse(txt); } catch (e){ const err = new Error('La dirección no respondió como tu Bitácora. Revisá que sea la de la implementación nueva y que termine en /exec.'); err.tipo = 'respuesta'; throw err; }
   if (j.ok === false && !j.conflicto){ const err = new Error(j.mensaje || 'La planilla devolvió un error.'); err.tipo = j.error || 'servidor'; throw err; }
@@ -1732,7 +1734,6 @@ function programarSincro(ms){ clearTimeout(temporizadorSincro); temporizadorSinc
 async function sincronizar(motivo){
   if (!vinculado() || !datosCargados) return;
   if (sincronizando){ sincroOtraVez = true; return; }
-  if (!navigator.onLine){ setEstado(estadoReposo()); return; }
   clearTimeout(temporizadorSincro);
   if (temporizadorGuardado) await guardarAhora();
   sincronizando = true; ultimaRevision = Date.now(); setEstado('sincronizando');
@@ -1784,8 +1785,9 @@ async function sincronizar(motivo){
     }
     throw new Error('La planilla cambió varias veces mientras sincronizaba. Se vuelve a intentar en un momento.');
   } catch (e){
-    errorSincro = e.tipo === 'sinconexion' ? '' : (e.message || 'Error al sincronizar.');
-    if (avisar && errorSincro) aviso(errorSincro, 'error', 6000);
+    // Sin respuesta de la red: se muestra "Sin conexión" y se reintenta solo
+    if (e.tipo === 'red'){ sinRed = true; errorSincro = ''; if (avisar) aviso(e.message, 'aviso', 6000); }
+    else { errorSincro = e.message || 'Error al sincronizar.'; if (avisar) aviso(errorSincro, 'error', 6000); }
     if (!['clave', 'sin-clave', 'respuesta'].includes(e.tipo)) programarSincro(60000);
   } finally {
     sincronizando = false;
@@ -1794,7 +1796,7 @@ async function sincronizar(motivo){
   }
 }
 async function revisarCambiosRemotos(){
-  if (!vinculado() || sincronizando || document.visibilityState !== 'visible' || !navigator.onLine || !datosCargados) return;
+  if (!vinculado() || sincronizando || document.visibilityState !== 'visible' || !datosCargados) return;
   ultimaRevision = Date.now();
   if (sincro.pendiente || errorSincro) return sincronizar('revision');
   try {
@@ -1827,7 +1829,6 @@ async function conectarDispositivo(urlIn, claveIn){
   const error = m => { ayuda.textContent = m; ayuda.className = 'ayuda neg'; aviso(m, 'error', 6000); };
   if (!urlValida(url)) return error('La dirección tiene que ser la de tu implementación de Apps Script y terminar en /exec.');
   if (clave.length < 20) return error('Pegá la clave privada completa que generaste con crearClaveApp.');
-  if (!navigator.onLine) return error('Necesitás internet para conectar este dispositivo.');
   const btn = $('btnConectar'); btn.disabled = true; btn.innerHTML = ico('refrescar') + 'Conectando…';
   ayuda.textContent = 'Probando la conexión con tu planilla…'; ayuda.className = 'ayuda';
   try {
